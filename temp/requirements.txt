@@ -1,0 +1,10 @@
+flask>=2.0.1
+flask-cors>=3.0.10
+numpy>=1.24.3
+opencv-python>=4.8.0
+mediapipe>=0.10.5
+moviepy>=1.0.3
+scenedetect>=0.6.2
+sentence-transformers>=2.2.2
+google-generativeai>=0.3.1
+scikit-learn>=1.2.2
