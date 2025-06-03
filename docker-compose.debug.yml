@@ -1,14 +1,41 @@
-version: '3.4'
+version: '3.8'
 
 services:
-  clipit:
-    image: clipit
+  backend:
     build:
-      context: .
-      dockerfile: ./Dockerfile
-    command: ["sh", "-c", "pip install debugpy -t /tmp && python /tmp/debugpy --wait-for-client --listen 0.0.0.0:5678 -m flask run --no-debugger --no-reload --host 0.0.0.0 --port 5001"]
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clipit-backend-debug
+    restart: unless-stopped
     ports:
-      - 5001:5001
-      - 5678:5678
+      - "8080:8080"
+      - "5678:5678"  # For debugpy
     environment:
-      - FLASK_APP=venv/lib/python3.10/site-packages/absl/app.py
+      - PORT=8080
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./backend:/app
+      - clipit_snippets:/app/snippets
+    command: ["sh", "-c", "pip install debugpy -t /tmp && python /tmp/debugpy --wait-for-client --listen 0.0.0.0:5678 -m flask run --no-debugger --no-reload --host 0.0.0.0 --port 8080"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: clipit-frontend-debug
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: ["npm", "run", "dev"]
+    depends_on:
+      - backend
+
+volumes:
+  clipit_snippets:
+    driver: local

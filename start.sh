@@ -2,81 +2,57 @@
 
 echo "Starting ClipIt..."
 
-# Look for Python 3 in common locations
-PYTHON=$(which python3 || which python3.11 || which python3.10 || which python3.9 || which python3.8 || which python)
-if [ -z "$PYTHON" ]; then
-  echo "Error: Python 3 is required but not found"
+# Check if Docker is installed
+if ! command -v docker &> /dev/null; then
+  echo "Error: Docker is required but not found. Please install Docker first."
   exit 1
 fi
 
-# Setup backend
-cd backend
-
-# Create a virtual environment if it doesn't exist
-if [ ! -d "venv" ]; then
-  echo "Creating virtual environment..."
-  $PYTHON -m venv venv
+# Check if Docker Compose is installed
+if ! command -v docker-compose &> /dev/null; then
+  echo "Error: Docker Compose is required but not found. Please install Docker Compose first."
+  exit 1
 fi
 
-# Activate virtual environment
-source venv/bin/activate
-
-# Install backend dependencies
-echo "Installing backend dependencies..."
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# Make sure API key is set
-if [ -z "$GEMINI_API_KEY" ]; then
-  if [ -f ".env" ]; then
-    export $(grep -v '^#' .env | xargs)
+# Check for .env file, create if it doesn't exist
+if [ ! -f ".env" ]; then
+  if [ -f ".env.sample" ]; then
+    echo "Creating .env file from sample..."
+    cp .env.sample .env
+    echo "Please edit the .env file and add your Gemini API key."
+    exit 1
   else
-    echo -n "Please enter your Gemini API key: "
-    read GEMINI_API_KEY
-    echo "GEMINI_API_KEY=$GEMINI_API_KEY" > .env
-    export GEMINI_API_KEY
+    echo "Error: .env.sample file not found. Please create a .env file with your Gemini API key."
+    echo "GEMINI_API_KEY=your_api_key_here" > .env
+    echo "Please edit the .env file and add your Gemini API key."
+    exit 1
   fi
 fi
 
-# Create required directories
-mkdir -p uploads snippets
-
-# Start backend
-echo "Starting backend server..."
-python app.py &
-BACKEND_PID=$!
-
-# Start frontend
-cd ../frontend
-
-# Install frontend dependencies if needed
-if [ ! -d "node_modules" ]; then
-  echo "Installing frontend dependencies..."
-  npm install
+# Check if GEMINI_API_KEY is set in .env
+if ! grep -q "GEMINI_API_KEY=" .env || grep -q "GEMINI_API_KEY=your_gemini_api_key_here" .env; then
+  echo "Error: GEMINI_API_KEY is not set in .env file."
+  echo "Please edit the .env file and add your Gemini API key."
+  exit 1
 fi
 
-# Start frontend on port 3001 explicitly
-echo "Starting frontend server..."
-export NEXT_PUBLIC_API_URL="http://localhost:5001"
-npx next dev -p 3001 &
-FRONTEND_PID=$!
+# Choose development or production mode
+echo "Select mode:"
+echo "1) Development (with hot-reloading)"
+echo "2) Production"
+read -p "Enter choice [1-2]: " mode
 
-# Function to handle script termination
-cleanup() {
-    echo "Shutting down servers..."
-    kill $BACKEND_PID
-    kill $FRONTEND_PID
-    exit
-}
-
-# Register the cleanup function for when script is terminated
-trap cleanup SIGINT SIGTERM
-
-echo ""
-echo "ClipIt is running!"
-echo "Backend: http://localhost:5001"
-echo "Frontend: http://localhost:3001"
-echo "Press Ctrl+C to stop"
-
-# Wait for both processes
-wait
+case $mode in
+  1)
+    echo "Starting ClipIt in development mode..."
+    docker-compose -f docker-compose.debug.yml up --build
+    ;;
+  2)
+    echo "Starting ClipIt in production mode..."
+    docker-compose up --build
+    ;;
+  *)
+    echo "Invalid choice. Exiting."
+    exit 1
+    ;;
+esac
