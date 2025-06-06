@@ -55,3 +55,15 @@ CLAUDE.md
 # Dependencies cache
 pip-log.txt
 pip-delete-this-directory.txt
+
+# Generated files
+/backend/snippets/*
+!/backend/snippets/.gitkeep
+/backend/feedback_log.json
+/backend/clip_memory.json
+
+# Docker
+.dockerignore.bak
+
+# Fly.io
+fly.toml.bak

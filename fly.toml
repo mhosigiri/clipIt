@@ -2,11 +2,11 @@ app = "clip-it"
 primary_region = "sjc"
 
 [build]
-  [build.args]
-    PYTHON_VERSION = "3.11"
+  dockerfile = "Dockerfile"
 
 [env]
   PORT = "8080"
+  PYTHONUNBUFFERED = "1"
 
 [http_service]
   internal_port = 8080
