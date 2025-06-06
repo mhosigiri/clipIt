@@ -10,7 +10,12 @@ from scenedetect import detect, ContentDetector
 import mediapipe as mp
 import google.generativeai as genai
 import json
+import logging
 from memory_store import MemoryStore
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 scene_cache = {}
 cache_lock = threading.Lock()
@@ -51,15 +56,57 @@ face_detection = mp.solutions.face_detection.FaceDetection(
     min_detection_confidence=0.5
 )
 
+def validate_video(video_path: str):
+    """Validate video file before processing."""
+    if not os.path.exists(video_path):
+        raise ValueError("Video file does not exist")
+    
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        raise ValueError("Cannot open video file - invalid format or corrupted")
+    
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    
+    if frame_count == 0:
+        cap.release()
+        raise ValueError("Video has no frames")
+    
+    if fps <= 0:
+        cap.release()
+        raise ValueError("Invalid video frame rate")
+    
+    # Check if we can read at least the first frame
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        cap.release()
+        raise ValueError("Cannot read video frames")
+    
+    cap.release()
+    logger.info(f"Video validation passed: {frame_count} frames, {fps} fps")
+    return frame_count, fps
+
 def analyze_video(video_path: str):
     """Analyze video to find interesting scenes using face detection and motion analysis."""
+    logger.info(f"Starting video analysis for: {video_path}")
+    
+    # Validate video first
+    frame_count, fps = validate_video(video_path)
+    
     scenes = []
     cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_frames = frame_count
     
     # Detect scenes using PySceneDetect
-    scene_list = detect(video_path, ContentDetector())
+    logger.info("Detecting scenes with PySceneDetect...")
+    try:
+        scene_list = detect(video_path, ContentDetector())
+        logger.info(f"Found {len(scene_list)} scenes")
+    except Exception as e:
+        logger.error(f"Scene detection failed: {str(e)}")
+        cap.release()
+        raise ValueError(f"Scene detection failed: {str(e)}")
     
     for scene in scene_list:
         start_frame = int(scene[0].frame_num)
@@ -72,29 +119,49 @@ def analyze_video(video_path: str):
             continue
             
         # Analyze frames in the scene
+        logger.info(f"Analyzing scene {len(scenes)+1}: {start_time:.2f}s to {end_time:.2f}s")
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         face_count = 0
         motion_score = 0
         prev_frame = None
+        processed_frames = 0
         
         for frame_idx in range(start_frame, end_frame):
             ret, frame = cap.read()
             if not ret:
+                logger.warning(f"Could not read frame {frame_idx}")
                 break
+            
+            processed_frames += 1
+            
+            try:
+                # Convert to RGB for MediaPipe
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-            # Convert to RGB for MediaPipe
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Face detection
-            results = face_detection.process(frame_rgb)
-            if results.detections:
-                face_count += len(results.detections)
-            
-            # Motion detection
-            if prev_frame is not None:
-                diff = cv2.absdiff(frame, prev_frame)
-                motion_score += np.mean(diff)
-            prev_frame = frame.copy()
+                # Face detection with error handling
+                try:
+                    results = face_detection.process(frame_rgb)
+                    if results and results.detections:
+                        face_count += len(results.detections)
+                except Exception as e:
+                    logger.warning(f"Face detection failed for frame {frame_idx}: {str(e)}")
+                    # Continue without face detection for this frame
+                
+                # Motion detection
+                if prev_frame is not None:
+                    try:
+                        diff = cv2.absdiff(frame, prev_frame)
+                        motion_score += np.mean(diff)
+                    except Exception as e:
+                        logger.warning(f"Motion detection failed for frame {frame_idx}: {str(e)}")
+                
+                prev_frame = frame.copy()
+                
+            except Exception as e:
+                logger.warning(f"Frame processing failed for frame {frame_idx}: {str(e)}")
+                continue
+        
+        logger.info(f"Scene analysis complete: {processed_frames} frames processed, {face_count} faces detected")
         
         # Calculate scene score
         scene_score = (face_count * 0.6 + motion_score * 0.4) / (end_frame - start_frame)
@@ -109,11 +176,36 @@ def analyze_video(video_path: str):
 
 def extract_clip(video_path: str, start_time: float, end_time: float, output_path: str):
     """Extract a clip from the video using moviepy."""
-    video = VideoFileClip(video_path)
-    clip = video.subclip(start_time, end_time)
-    clip.write_videofile(output_path, codec='libx264', audio_codec='aac')
-    video.close()
-    clip.close()
+    logger.info(f"Extracting clip from {start_time:.2f}s to {end_time:.2f}s")
+    
+    try:
+        video = VideoFileClip(video_path)
+        duration = video.duration
+        
+        # Validate time ranges
+        if start_time < 0 or end_time > duration or start_time >= end_time:
+            video.close()
+            raise ValueError(f"Invalid time range: {start_time:.2f}s to {end_time:.2f}s (video duration: {duration:.2f}s)")
+        
+        clip = video.subclip(start_time, end_time)
+        
+        # Extract with error handling
+        clip.write_videofile(
+            output_path, 
+            codec='libx264', 
+            audio_codec='aac',
+            verbose=False,
+            logger=None  # Suppress moviepy logs
+        )
+        
+        video.close()
+        clip.close()
+        
+        logger.info(f"Clip extraction completed: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"Clip extraction failed: {str(e)}")
+        raise ValueError(f"Failed to extract clip: {str(e)}")
 
 # Gemini helper function
 def get_best_scene_with_gemini(prompt: str, scenes: list) -> dict:
@@ -139,37 +231,74 @@ Just return a number (1-5)."""
 @app.route("/analyze", methods=["POST"])
 def analyze_video_endpoint():
     """API endpoint to analyze video and extract the most interesting clip."""
+    logger.info("Received video analysis request")
+    
     vid = request.files.get("video")
     prompt = request.form.get("prompt", "")
     
     if not vid:
+        logger.error("No video file provided")
         return jsonify({"error": "Missing video file"}), 400
+    
+    if not vid.filename:
+        logger.error("Video file has no filename")
+        return jsonify({"error": "Invalid video file"}), 400
         
     # Save uploaded video
     video_id = str(uuid.uuid4())
-    video_ext = os.path.splitext(vid.filename)[1]
+    video_ext = os.path.splitext(vid.filename)[1].lower()
+    
+    # Validate video file extension
+    allowed_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.m4v']
+    if video_ext not in allowed_extensions:
+        logger.error(f"Unsupported video format: {video_ext}")
+        return jsonify({"error": f"Unsupported video format. Allowed: {', '.join(allowed_extensions)}"}), 400
+    
     video_path = os.path.join(UPLOAD_DIR, f"{video_id}{video_ext}")
-    vid.save(video_path)
+    logger.info(f"Saving video as: {video_path}")
+    
+    try:
+        vid.save(video_path)
+        file_size = os.path.getsize(video_path)
+        logger.info(f"Video saved successfully: {file_size} bytes")
+    except Exception as e:
+        logger.error(f"Failed to save video: {str(e)}")
+        return jsonify({"error": "Failed to save video file"}), 500
     
     try:
         # Analyze video to find interesting scenes
+        logger.info("Starting video scene analysis...")
         scenes = analyze_video(video_path)
         
         if not scenes:
-            return jsonify({"error": "No suitable scenes found in the video"}), 400
-            
+            logger.warning("No suitable scenes found in the video")
+            return jsonify({"error": "No suitable scenes found in the video. Try a different video or check if it contains clear scenes."}), 400
+        
+        logger.info(f"Found {len(scenes)} suitable scenes")
+        
         # Get the best scene
+        logger.info(f"Selecting best scene using prompt: '{prompt}'")
         best_scene = get_best_scene_with_gemini(prompt, scenes)
+        logger.info(f"Selected scene: {best_scene['start_time']:.2f}s to {best_scene['end_time']:.2f}s")
         
         # Extract the clip
         snippet_filename = f"{video_id}_snippet.mp4"
         snippet_path = os.path.join(SNIPPET_DIR, snippet_filename)
+        
+        logger.info(f"Extracting clip to: {snippet_path}")
         extract_clip(
             video_path,
             best_scene['start_time'],
             best_scene['end_time'],
             snippet_path
         )
+        
+        if not os.path.exists(snippet_path):
+            logger.error("Clip extraction failed - output file not created")
+            return jsonify({"error": "Failed to extract video clip"}), 500
+        
+        clip_size = os.path.getsize(snippet_path)
+        logger.info(f"Clip extracted successfully: {clip_size} bytes")
         
         # Store memory
         memory_store.add_memory(video_id, {
@@ -179,10 +308,15 @@ def analyze_video_endpoint():
             "snippet_path": snippet_path
         })
         
+        logger.info("Sending extracted clip to client")
         return send_file(snippet_path, mimetype="video/mp4")
         
+    except ValueError as e:
+        logger.error(f"Validation error: {str(e)}")
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Unexpected error during processing: {str(e)}")
+        return jsonify({"error": f"Processing failed: {str(e)}"}), 500
     finally:
         # Clean up uploaded video
         if os.path.exists(video_path):
